@@ -1,3 +1,4 @@
+import pymetrics
 import unittest
 class TestCounter(unittest.TestCase):
     def setUp(self):
