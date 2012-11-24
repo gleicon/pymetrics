@@ -2,3 +2,4 @@
 build
 dist
 pymetrics.egg-info
+*.swp

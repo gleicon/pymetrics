@@ -1,6 +1,7 @@
 #encoding: utf-8
 import redis
 import time
+from pds_redis import Enum
 
 class BaseMetrics(object):
     def __init__(self, appname, name):
@@ -117,8 +118,45 @@ class RetricsHistogram(BaseMetrics):
     of data. In addition to minimum, maximum, mean, etc., it also measures
     median, 75th, 90th, 95th, 98th, 99th, and 99.9th percentiles.
     """
-    def update():
-        pass
+    def __init__(self, appname, name):
+        super(RetricsHistogram, self).__init__(appname, name)
+        self._list_name = "retrics:histogram:%s:%s" % (self._appname, self._name)
+        self._e = Enum(self._load_list())
+
+    def update(self, val):
+        assert(type(val) is int or type(val) is float)
+        self._redis.lpush(self._list_name, val)
+        self._e.reload(self._load_list())
+
+    def percentile(self, p):
+        """
+        Percentile of the Histogram list
+        """
+        assert(type(p) is float)
+        return self._e.percentile(p)
+    
+    def standard_deviation(self):
+        """
+        standard deviation of the Histogram list
+        """
+        return self._e.standard_deviation()
+
+    def median(self):
+        """
+        Median (50% Percentile) of the Histogram list
+        """
+        return self._e.median()
+    
+    def mean(self):
+        """
+        Mean of the Histogram list
+        """
+        return self._e.mean()
+
+    def _load_list(self):
+        l =  self._redis.lrange(self._list_name, 0, -1)
+        l = map(lambda x: float(x), l) #oh god why
+        return l
 
 class RetricsTimer(BaseMetrics):
     """
