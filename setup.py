@@ -8,7 +8,7 @@ log.set_threshold(log.INFO)
 
 setup(
         name            = "pymetrics",
-        version         = "0.1",
+        version         = "0.2",
 
         packages        =   ['pymetrics'],
         install_requires = ['redis>=2.4.10'],
