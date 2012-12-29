@@ -8,8 +8,7 @@ import time, random
 
 rf = pymetrics.RetricsFactory("metrics_test")
 
-def test_meter(rf):
-    meters = rf.new_meter("a_meter")
+def test_meter(meters):
     last_t = time.time()
     c = j = 0
     while(j < 10):
@@ -27,6 +26,7 @@ def test_meter(rf):
         print "avg 15 min: %s" % fifteen_min
         j = j + 1
 
+print 'Counter test'
 counter = rf.new_counter("a_counter")
 counter.reset()
 for a in xrange(10):
@@ -34,11 +34,13 @@ for a in xrange(10):
 assert(counter.get_value() == 10)
 print counter.get_value()
 
+print 'Gauge test'
 gauge = rf.new_gauge("a_gauge")
 gauge.set(10)
 assert(gauge.get() == 10)
 print gauge.get()
 
+print 'Timer test'
 timer = rf.new_timer("a_timer")
 timer.start()
 time.sleep(5)
@@ -46,7 +48,7 @@ timer.stop()
 print timer.get_value()
 assert(timer.get_value() == 5)
 
-
+print 'Histogram test'
 histogram = rf.new_histogram("a_histogram")
 histogram.update(10)
 histogram.update(1)
@@ -60,5 +62,27 @@ print histogram.mean()
 print histogram.median()
 print histogram.standard_deviation()
 
-test_meter(rf)
+print 'Meter test'
+meters = rf.new_meter("a_meter")
+test_meter(meters)
+
+print 'Listing instances per metric for timer'
+print rf.list_instances_per_metric('timer')
+
+print 'Listing instances per metric for histogram'
+print rf.list_instances_per_metric('histogram')
+
+print 'Listing instances per metric for histogram'
+print rf.list_instances_per_metric('histogram')
+
+print 'Unregistering all metrics (clears up all data)'
+rf.unregister_instance(counter)
+rf.unregister_instance(gauge)
+rf.unregister_instance(timer)
+rf.unregister_instance(meters)
+rf.unregister_instance(histogram)
+
+print 'Listing instances per metric for histogram'
+print rf.list_instances_per_metric('histogram')
+
 

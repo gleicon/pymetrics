@@ -1,14 +1,34 @@
 #encoding: utf-8
 import redis
-import time
+import time, os
 from pds_redis import Enum
 
 class BaseMetrics(object):
-    def __init__(self, appname, name):
-        self._name = name
+    def __init__(self, appname, name, redis = None, timeout = None):
+        
         self._appname = appname
-        p = redis.ConnectionPool(host='localhost', port=6379, db=0)
-        self._redis = redis.Redis(connection_pool = p)
+        self._timeout = timeout
+
+        _klass = self.__class__.__name__.lower()
+        self._instances_per_metric_index = "retrics:index:%s:%s" % (appname,
+                _klass)
+
+        self._name= "%s:%d" % (name, os.getpid())
+         
+        if redis is None:
+            p = redis.ConnectionPool(host='localhost', port=6379, db=0)
+            self._redis = redis.Redis(connection_pool = p)
+        else:
+            self._redis = redis
+
+        self._redis.zadd(self._instances_per_metric_index, self._name, 1.0)
+        
+    def remove(self):
+        self.clear()
+        self._redis.zrem(self._instances_per_metric_index, self._name)
+
+    def clear(self):
+        pass
 
 class RetricsGauge(BaseMetrics):
     """
@@ -22,7 +42,10 @@ class RetricsGauge(BaseMetrics):
     def get(self):
         return int(self._redis.get("retrics:gauge:%s:%s" % (self._appname,
             self._name)))
-
+    
+    def clear(self):
+        self._redis.delete("retrics:gauge:%s:%s" % (self._appname,
+            self._name))
 
 class RetricsCounter(BaseMetrics):
     """
@@ -39,9 +62,16 @@ class RetricsCounter(BaseMetrics):
     def reset(self):
         self._redis.set("retrics:counter:%s:%s" % (self._appname, self._name), 0)
     
+    def clear(self):
+        self._redis.delete("retrics:counter:%s:%s" % (self._appname, self._name))
+    
     def get_value(self):
-        return int(self._redis.get("retrics:counter:%s:%s" % (self._appname,
-            self._name)))
+        r = self._redis.get("retrics:counter:%s:%s" % (self._appname,
+            self._name))
+        if r is None:
+            return 0
+        else:
+            return int(r)
 
 class RetricsMeter(BaseMetrics):
     """
@@ -49,8 +79,8 @@ class RetricsMeter(BaseMetrics):
     second”). In addition to the mean rate, meters also track 1-, 5-, and
     15-minute moving averages.
     """
-    def __init__(self, appname, name):
-        super(RetricsMeter, self).__init__(appname, name)
+    def __init__(self, appname, name, redis, timeout):
+        super(RetricsMeter, self).__init__(appname, name, redis, timeout)
         self._last_t = time.time()
         self.reset()
 
@@ -111,6 +141,16 @@ class RetricsMeter(BaseMetrics):
 
     def mark(self):
         self._update(time.time())
+    
+    def clear(self):
+        self._redis.delete(self._ns("1minute"))
+        self._redis.delete(self._ns("5minute"))
+        self._redis.delete(self._ns("15minute"))
+        self._redis.delete(self._ns("seconds"))
+        self._redis.delete(self._ns("curr_second"))
+        self._redis.delete(self._ns("l1min"))
+        self._redis.delete(self._ns("l5min"))
+        self._redis.delete(self._ns("l15min"))
 
 class RetricsHistogram(BaseMetrics):
     """
@@ -118,8 +158,8 @@ class RetricsHistogram(BaseMetrics):
     of data. In addition to minimum, maximum, mean, etc., it also measures
     median, 75th, 90th, 95th, 98th, 99th, and 99.9th percentiles.
     """
-    def __init__(self, appname, name):
-        super(RetricsHistogram, self).__init__(appname, name)
+    def __init__(self, appname, name, redis, timeout):
+        super(RetricsHistogram, self).__init__(appname, name, redis, timeout)
         self._list_name = "retrics:histogram:%s:%s" % (self._appname, self._name)
         self._e = Enum(self._load_list())
 
@@ -157,6 +197,14 @@ class RetricsHistogram(BaseMetrics):
         l =  self._redis.lrange(self._list_name, 0, -1)
         l = map(lambda x: float(x), l) #oh god why
         return l
+   
+    def reset(self):
+        self._redis.delete(self._list_name)
+        self._e = Enum(self._load_list())
+
+    def clear(self):
+        self._redis.delete(self._list_name)
+        self._e = Enum([])
 
 class RetricsTimer(BaseMetrics):
     """
@@ -180,36 +228,79 @@ class RetricsTimer(BaseMetrics):
         p = "retrics:timer:%s:%s" % (self._appname, self._name)
         self._redis.mset({"%s:start" % p: 0, "stop:%s" % p: 0})
 
+    def clear(self):
+        p = "retrics:timer:%s:%s" % (self._appname, self._name)
+        self._redis.delete("%s:start" % p, "%s:stop" % p)
+
 class RetricsFactory():
     """
     Retrics - Redis based metrics library
     Inspired by coda hale's Metrics
 
     Create a metrics factory for your application
-    rf = RetricsFactory()
+    rf = RetricsFactory("my_application")
     
+    Optionally you can pass a global timeout in seconds to keep the database
+    clean. No writes to a given metrics ensure its data will be cleaned up
+
+    rf = RetricsFactory("my_application", 3600)
+
+
     Instrument your code:
-    c = rf.new_counter("requests")
-    c.incr()
-    c.decr()
+        c = rf.new_counter("requests")
+        c.incr()
+        c.decr()
+
+    Unregister and clean up all data with:
+        rf.unregister(c)
+
+    Check the number of instances per metric (if any)
+
+    print rf.list_instances_per_metric('gauge')
+    
     """
-    def __init__(self, appname = None):
+    def __init__(self, appname = None, timeout = None):
+       
         self._appname = appname
+        self._timeout = timeout
+        p = redis.ConnectionPool(host='localhost', port=6379, db=0)
+        self._redis = redis.Redis(connection_pool = p)
+    
+    def _metric_name(self, metric_name):
+        _klass = "retrics%s" % metric_name.lower()
+        return "retrics:index:%s:%s" % (self._appname,_klass)
+
+    def list_instances_per_metric(self, metric_name):
+        _klass = "retrics%s" % metric_name.lower()
+        _instances_per_metric_index = "retrics:index:%s:%s" % (self._appname,
+                _klass.lower())
+        return self._redis.zrange(_instances_per_metric_index, 0, -1)
+    
+    def unregister_instance(self, kl):
+        """
+            Expect the metric object itself to clean everything up.
+        """
+        kl.remove()
+        self._clear_instance(kl.__class__.__name__.lower(), kl._name)
+
+    def _clear_instance(self, metric_name, instance_name):
+        _instances_per_metric_index = "retrics:index:%s:%s" % (self._appname, metric_name)
+        self._redis.zrem(_instances_per_metric_index, instance_name)
 
     def new_gauge(self, name):
-        return RetricsGauge(self._appname, name)
+        return RetricsGauge(self._appname, name, self._redis, self._timeout)
 
     def new_counter(self, name):
-        return RetricsCounter(self._appname, name)
+        return RetricsCounter(self._appname, name, self._redis, self._timeout)
 
     def new_meter(self, name):
-        return RetricsMeter(self._appname, name)
+        return RetricsMeter(self._appname, name, self._redis, self._timeout)
 
     def new_histogram(self, name):
-        return RetricsHistogram(self._appname, name)
+        return RetricsHistogram(self._appname, name, self._redis, self._timeout)
 
     def new_timer(self, name):
-        return RetricsTimer(self._appname, name)
+        return RetricsTimer(self._appname, name, self._redis, self._timeout)
 
     def new_healthcheck(self, name):
         pass
